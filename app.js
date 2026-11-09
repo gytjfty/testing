@@ -23,4 +23,129 @@ function download(b,n){const u=URL.createObjectURL(b),a=document.createElement('
 drag($('leftGrip'),e=>({x:e.clientX,w:$('sidebar').offsetWidth}),(e,v)=>$('sidebar').style.width=Math.max(120,Math.min(650,v.w+e.clientX-v.x))+'px');drag($('rightGrip'),e=>({x:e.clientX,w:$('code').offsetWidth}),(e,v)=>$('code').style.width=Math.max(240,Math.min(1800,v.w+e.clientX-v.x))+'px');drag($('logGrip'),e=>({y:e.clientY,h:$('console').offsetHeight}),(e,v)=>$('console').style.height=Math.max(60,Math.min($('view').offsetHeight-180,v.h+v.y-e.clientY))+'px');
 addEventListener('message',e=>{if(e.source!==$('preview').contentWindow||e.origin!==location.origin||e.data?.source!=='zippad-preview'||!Array.isArray(e.data.args))return;log(e.data.args.join(' '),e.data.kind)});navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.source==='zippad-sw')log(e.data.message,'error')});addEventListener('beforeunload',e=>{save();if(dirty){e.preventDefault();e.returnValue=''}});addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();safe(run)}if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();$('export').click()}});
 put('demo/index.html',{blob:new Blob(['<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="styles/main.css"></head><body><canvas id="game"></canvas><div>GitHub Pages virtual project<br>Relative ES modules + pointer lock<br>Click to capture; Esc to release</div><script type="module" src="scripts/main.js"></script></body></html>'])});put('demo/styles/main.css',{blob:new Blob(['html,body{margin:0;height:100%;overflow:hidden;background:#15253d;color:#e1edff;font:15px system-ui}canvas{width:100%;height:100%;display:block}body>div{position:absolute;top:18px;left:18px;line-height:1.7;pointer-events:none}'])});put('demo/scripts/main.js',{blob:new Blob(["import {start} from './player.js';start(document.querySelector('canvas'));console.log('Relative module import succeeded');import('./extra.js').then(m=>console.log(m.message));fetch('/data.json').then(r=>r.json()).then(console.log);"])});put('demo/scripts/extra.js',{blob:new Blob(["export const message='Dynamic import succeeded';"])});put('demo/scripts/player.js',{blob:new Blob(["export function start(c){const g=c.getContext('2d');let x=160,y=160;function draw(){c.width=innerWidth;c.height=innerHeight;g.fillStyle='#15253d';g.fillRect(0,0,c.width,c.height);g.strokeStyle='#85e3c8';g.lineWidth=2;g.beginPath();g.moveTo(x-15,y);g.lineTo(x+15,y);g.moveTo(x,y-15);g.lineTo(x,y+15);g.stroke()}c.onclick=async()=>{try{await c.requestPointerLock()}catch(e){console.error(e)}};addEventListener('mousemove',e=>{if(document.pointerLockElement!==c)return;x=Math.max(0,Math.min(innerWidth,x+e.movementX));y=Math.max(0,Math.min(innerHeight,y+e.movementY));draw()});addEventListener('resize',draw);draw()}"])});put('demo/data.json',{blob:new Blob(['{"message":"Root-relative fetch succeeded"}'])});folders.add('demo/assets');refresh();$('root').value='demo';renderEntries('demo/index.html');safe(()=>openFile('demo/index.html'));
-safe(async()=>{if(!isSecureContext||!('serviceWorker'in navigator))throw Error('This editor needs HTTPS and service-worker support. Open the deployed GitHub Pages URL, not a downloaded file.');await navigator.serviceWorker.register(new URL('sw.js',BASE),{scope:BASE.pathname});await navigator.serviceWorker.ready;if(!navigator.serviceWorker.controller)await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error('Service worker installed. Reload this page once to activate it.')),12000);navigator.serviceWorker.addEventListener('controllerchange',()=>{clearTimeout(t);resolve()},{once:true})});ready=true;status('Ready on GitHub Pages. Import a ZIP or run the demo.');await run()});
+async function initializePreviewWorker() {
+  ready = false;
+  $("run").disabled = true;
+
+  const timeout = (promise, milliseconds, message) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(message)),
+        milliseconds
+      );
+
+      promise.then(
+        value => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        error => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
+
+  try {
+    if (!window.isSecureContext) {
+      throw new Error(
+        "Open the deployed HTTPS GitHub Pages website, " +
+        "not a downloaded HTML file."
+      );
+    }
+
+    if (!("serviceWorker" in navigator)) {
+      throw new Error(
+        "Service workers are unavailable in this browser or context."
+      );
+    }
+
+    const workerURL = new URL("sw.js", BASE);
+
+    status("Checking " + workerURL.href);
+
+    const response = await timeout(
+      fetch(workerURL, { cache: "no-store" }),
+      15000,
+      "Checking sw.js timed out. Check your connection and reload."
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `sw.js returned HTTP ${response.status}. ` +
+        "Publish sw.js beside index.html and app.js."
+      );
+    }
+
+    const contentType =
+      response.headers.get("content-type") || "";
+
+    if (!/javascript|ecmascript/i.test(contentType)) {
+      throw new Error(
+        `sw.js has an unexpected content type: ` +
+        `${contentType || "(missing)"}. ` +
+        "The URL may be returning an HTML error page."
+      );
+    }
+
+    status("Registering preview service worker…");
+
+    await timeout(
+      navigator.serviceWorker.register(workerURL.href, {
+        scope: BASE.href,
+        updateViaCache: "none"
+      }),
+      15000,
+      "Service-worker registration timed out."
+    );
+
+    status("Waiting for service-worker activation…");
+
+    await timeout(
+      navigator.serviceWorker.ready,
+      15000,
+      "The worker registered but did not activate. Reload once. " +
+      "If this persists, check the browser console for a worker error."
+    );
+
+    if (!navigator.serviceWorker.controller) {
+      status("Waiting for the worker to control this page…");
+
+      await timeout(
+        new Promise(resolve => {
+          const check = () => {
+            if (navigator.serviceWorker.controller) {
+              navigator.serviceWorker.removeEventListener(
+                "controllerchange",
+                check
+              );
+              resolve();
+            }
+          };
+
+          navigator.serviceWorker.addEventListener(
+            "controllerchange",
+            check
+          );
+
+          check();
+        }),
+        10000,
+        "The worker is active but does not control this page. " +
+        "Reload the deployed Pages website once."
+      );
+    }
+
+    ready = true;
+    $("run").disabled = false;
+
+    status("Preview worker ready. Import a ZIP or run the demo.");
+  } catch (error) {
+    const message = "Preview startup failed: " + error.message;
+    status(message);
+    log(message, "error");
+    console.error(error);
+  }
+}
+
+initializePreviewWorker();
