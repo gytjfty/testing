@@ -1,8 +1,8 @@
  'use strict';
-const $=id=>document.getElementById(id),BASE=new URL('.',location.href),DBNAME='zippad-pages:'+BASE.pathname,files=new Map(),folders=new Set(),collapsed=new Set(),tabs=[],widths=new Map(),enc=new TextEncoder();let active='',dirty=false,timer,ready=false,previewURL='',snapshotIDs=[],running=false,pending=false;
+const $=id=>document.getElementById(id),BASE=new URL('.',location.href),DBNAME='zippad-pages:'+BASE.pathname,files=new Map(),folders=new Set(),collapsed=new Set(),tabs=[],widths=new Map();let active='',dirty=false,timer,ready=false,previewURL='',snapshotIDs=[],running=false,pending=false,initializing=false,startupError='Preview setup is still in progress.';
 const text=n=>/\.(html?|css|[cm]?js|json|svg|xml|txt|md|csv|glsl|vert|frag|wgsl|tsx?|jsx|ya?ml|toml|map|webmanifest)$/i.test(n)||!n.split('/').pop().includes('.');
 function status(s){$('status').textContent=s}function log(s,type=''){const d=document.createElement('div');d.textContent=s;d.className=type;$('console').append(d);while($('console').children.length>500)$('console').firstChild.remove();$('console').scrollTop=$('console').scrollHeight}async function safe(fn){try{await fn()}catch(e){status(e.message);log(e.message,'error')}}
-function norm(s){const a=[];for(const p of s.replace(/\\/g,'/').split('/')){if(!p||p==='.')continue;if(p==='..'||p.includes(':')||p.includes('\0'))throw Error('Unsafe project path: '+s);a.push(p)}return a.join('/')}function parents(n){const a=n.split('/');a.pop();while(a.length){folders.add(a.join('/'));a.pop()}}function put(n,b){files.set(n,b);parents(n)}function mark(){dirty=true;status('Changes in memory. Export ZIP to keep them.')}
+function norm(s){const a=[];for(const p of s.replace(/\\/g,'/').split('/')){if(!p||p==='.')continue;if(p==='..'||p.includes(':')||p.includes('\0'))throw Error('Unsafe project path: '+s);a.push(p)}return a.join('/')}function parents(n){const a=n.split('/');a.pop();while(a.length){folders.add(a.join('/'));a.pop()}}function validateFile(n){if(!n)throw Error('A file path is required.');if(folders.has(n))throw Error('A folder has that path.');const a=n.split('/');for(let i=1;i<a.length;i++)if(files.has(a.slice(0,i).join('/')))throw Error('A file blocks that folder path.')}function put(n,b){files.set(n,b);parents(n)}function mark(){dirty=true;status('Changes in memory. Export ZIP to keep them.')}
 function save(){if(active&&files.has(active)&&text(active)){const value=$('editor').value;const f=files.get(active);if(f.content!==value){files.set(active,{blob:new Blob([value]),content:value});mark()}}}
 async function db(){return new Promise((resolve,reject)=>{const r=indexedDB.open(DBNAME,1);r.onupgradeneeded=()=>r.result.createObjectStore('projects',{keyPath:'id'});r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}async function storeSnapshot(record){const d=await db();try{await new Promise((resolve,reject)=>{const t=d.transaction('projects','readwrite');t.objectStore('projects').put(record);for(const id of snapshotIDs.slice(0,-2))t.objectStore('projects').delete(id);t.oncomplete=resolve;t.onerror=()=>reject(t.error);t.onabort=()=>reject(t.error)})}finally{d.close()}}
 function renderTree(){const r={dirs:new Map(),items:[]};function branch(path){let n=r;for(const p of path.split('/').filter(Boolean)){if(!n.dirs.has(p))n.dirs.set(p,{dirs:new Map(),items:[]});n=n.dirs.get(p)}return n}for(const d of folders)branch(d);for(const n of files.keys()){const k=n.lastIndexOf('/');branch(k<0?'':n.slice(0,k)).items.push(n)}$('tree').replaceChildren();function draw(node,target,prefix){for(const [name,kid]of [...node.dirs].sort((a,b)=>a[0].localeCompare(b[0]))){const path=prefix+name,d=document.createElement('details'),s=document.createElement('summary'),box=document.createElement('div');d.open=!collapsed.has(path);s.textContent=name+'/';d.ontoggle=()=>{if(d.open)collapsed.delete(path);else collapsed.add(path)};d.append(s,box);target.append(d);draw(kid,box,path+'/')}for(const n of node.items.sort()){const b=document.createElement('button');b.className='file'+(n===active?' active':'');b.textContent=n.split('/').pop();b.title=n;b.onclick=()=>safe(()=>openFile(n));target.append(b)}}draw(r,$('tree'),'')}
@@ -11,141 +11,36 @@ function refresh(){renderTree();renderTabs();renderSettings()}function drag(el,s
 function renderTabs(){$('tabs').replaceChildren();for(const n of tabs){const d=document.createElement('div'),b=document.createElement('button'),x=document.createElement('button'),g=document.createElement('div');d.className='tab'+(active===n?' active':'');d.style.width=(widths.get(n)||170)+'px';b.className='name';b.textContent=n.split('/').pop();b.title=n;b.onclick=()=>safe(()=>openFile(n));x.textContent='×';x.title='Close '+n;x.onclick=()=>safe(()=>closeFile(n));g.className='tabgrip';g.title='Drag to resize tab';drag(g,e=>({x:e.clientX,w:d.offsetWidth}),(e,v)=>{const w=Math.max(90,Math.min(500,v.w+e.clientX-v.x));d.style.width=w+'px';widths.set(n,w)});d.append(b,x,g);$('tabs').append(d)}}let openSequence=0;
 async function openFile(n){if(!files.has(n))return;save();const seq=++openSequence;const f=files.get(n);let value='Binary asset — preserved on export.';if(text(n)){if(f.content===undefined)f.content=await f.blob.text();value=f.content}if(seq!==openSequence)return;if(!tabs.includes(n))tabs.push(n);active=n;$('editor').value=value;$('editor').disabled=!text(n);$('path').textContent=n;renderTabs();renderTree()}
 async function closeFile(n){save();const i=tabs.indexOf(n);if(i<0)return;tabs.splice(i,1);if(active===n){active='';if(tabs.length)return openFile(tabs[Math.min(i,tabs.length-1)]);$('editor').value='';$('editor').disabled=true;$('path').textContent='No file open'}renderTabs();renderTree();status('Tab closed. Its file and edits remain in the project.')}
-async function run(){if(!ready)throw Error('Service worker is not ready. Open this editor on its HTTPS Pages URL.');if(running){pending=true;return}running=true;try{save();const entry=$('entry').value,root=$('root').value;if(!entry)throw Error('Choose an HTML entry. Framework source code must be built first.');const id=crypto.randomUUID();const record={id,root,spa:$('spa').checked,files:[...files].map(([path,f])=>[path,f.blob]),editorURL:location.href};await storeSnapshot(record);snapshotIDs.push(id);snapshotIDs=snapshotIDs.slice(-3);const rel=root?entry.slice(root.length+1):entry;previewURL=new URL('__preview__/'+id+'/'+rel.split('/').map(encodeURIComponent).join('/'),BASE).href;$('preview').src=previewURL;status('Running '+entry+' using service-worker virtual files.')}finally{running=false;if(pending){pending=false;safe(run)}}}
+async function run(){if(!ready)throw Error(startupError);if(running){pending=true;return}running=true;try{save();const entry=$('entry').value,root=$('root').value;if(!entry)throw Error('Choose an HTML entry. Framework source code must be built first.');const id=crypto.randomUUID();const record={id,root,spa:$('spa').checked,files:[...files].map(([path,f])=>[path,f.blob]),editorURL:location.href};await storeSnapshot(record);snapshotIDs.push(id);snapshotIDs=snapshotIDs.slice(-3);const rel=root?entry.slice(root.length+1):entry;previewURL=new URL('__preview__/'+id+'/'+rel.split('/').map(encodeURIComponent).join('/'),BASE).href;$('preview').src=previewURL;status('Running '+entry+' using service-worker virtual files.')}finally{running=false;if(pending){pending=false;safe(run)}}}
 function chooseList(){const q=$('filter').value.toLowerCase();$('choices').replaceChildren();for(const n of [...files.keys()].sort())if(n.toLowerCase().includes(q))$('choices').add(new Option(n,n));if($('choices').options.length)$('choices').selectedIndex=0}
 $('openTab').onclick=()=>{chooseList();$('picker').showModal();$('filter').focus()};$('filter').oninput=chooseList;$('choose').onclick=()=>safe(async()=>{if($('choices').value)await openFile($('choices').value);$('picker').close()});$('choices').ondblclick=()=>$('choose').click();$('cancel').onclick=()=>$('picker').close();$('closeTab').onclick=()=>safe(()=>closeFile(active));$('closeAll').onclick=()=>{save();openSequence++;tabs.length=0;active='';$('editor').value='';$('editor').disabled=true;$('path').textContent='No file open';renderTabs();renderTree()};
-$('editor').oninput=()=>{save();clearTimeout(timer);if($('auto').checked)timer=setTimeout(()=>safe(run),700)};$('editor').onkeydown=e=>{if(e.key==='Tab'){e.preventDefault();e.target.setRangeText('  ',e.target.selectionStart,e.target.selectionEnd,'end');e.target.dispatchEvent(new Event('input'))}};
+$('editor').oninput=()=>{save();clearTimeout(timer);if($('auto').checked&&ready)timer=setTimeout(()=>safe(run),700)};$('editor').onkeydown=e=>{if(e.key==='Tab'){e.preventDefault();e.target.setRangeText('  ',e.target.selectionStart,e.target.selectionEnd,'end');e.target.dispatchEvent(new Event('input'))}};
 $('import').onclick=()=>$('zip').click();$('zip').onchange=e=>safe(async()=>{const f=e.target.files[0];if(!f)return;try{save();if(dirty&&!confirm('Replace project? Export first to keep changes.'))return;if(!window.JSZip)throw Error('ZIP library did not load. Check your internet connection and reload.');if(f.size>50*1024*1024)throw Error('Compressed ZIP exceeds 50 MB.');status('Reading ZIP…');const z=await JSZip.loadAsync(f),next=new Map(),dirs=new Set();const list=Object.values(z.files);if(list.length>4000)throw Error('ZIP exceeds 4,000 entries.');let total=0;for(const item of list){const original=item.unsafeOriginalName||item.name;const n=norm(original);if(!n||n.startsWith('__MACOSX/'))continue;if(item.dir){dirs.add(n);continue}const data=await item.async('uint8array');total+=data.length;if(total>100*1024*1024)throw Error('Unpacked ZIP exceeds 100 MB.');if(next.has(n))throw Error('Duplicate path: '+n);next.set(n,{blob:new Blob([data])})}for(const n of next.keys()){const a=n.split('/');a.pop();while(a.length){dirs.add(a.join('/'));a.pop()}}for(const d of dirs)if(next.has(d))throw Error('A path is both a file and folder.');$('preview').src='about:blank';files.clear();folders.clear();for(const [n,b]of next)files.set(n,b);for(const d of dirs)folders.add(d);active='';tabs.length=0;openSequence++;collapsed.clear();$('editor').value='';$('editor').disabled=true;refresh();const indices=[...files.keys()].filter(n=>/(^|\/)index\.html?$/i.test(n)).sort((a,b)=>a.split('/').length-b.split('/').length);if(indices.length){const n=indices[0];$('root').value=n.includes('/')?n.slice(0,n.lastIndexOf('/')):'';renderEntries(n)}if($('entry').value)await openFile($('entry').value);else if(files.size)await openFile(files.keys().next().value);dirty=false;status('ZIP imported. Choose Web root and Entry, then Run.')}finally{e.target.value=''}});
-$('add').onclick=()=>$('uploads').click();$('uploads').onchange=e=>safe(async()=>{try{save();const raw=prompt('Destination folder (blank = ZIP root)','');if(raw===null)return;const dir=norm(raw);for(const f of e.target.files){const n=(dir?dir+'/':'')+f.name;if(files.has(n)&&!confirm('Replace '+n+'?'))continue;put(n,{blob:f});if(n===active){active='';await openFile(n)}}refresh();mark()}finally{e.target.value=''}});
-$('new').onclick=()=>safe(async()=>{const raw=prompt('File path, e.g. src/player.js');if(!raw)return;const n=norm(raw);if(!n)return;if(folders.has(n))throw Error('A folder has that path.');if(!files.has(n)){put(n,{blob:new Blob(['']),content:''});mark()}refresh();await openFile(n)});$('folder').onclick=()=>safe(()=>{const raw=prompt('Folder path');if(!raw)return;const n=norm(raw);if(!n)return;if(files.has(n))throw Error('A file has that path.');folders.add(n);parents(n+'/x');refresh();mark()});
-$('rename').onclick=()=>safe(async()=>{if(!active)return;const raw=prompt('New file path (references are not rewritten)',active);if(!raw)return;const n=norm(raw);if(!n||n===active)return;if(files.has(n)||folders.has(n))throw Error('Destination exists.');save();const old=active;put(n,files.get(old));files.delete(old);tabs[tabs.indexOf(old)]=n;active='';await openFile(n);refresh();mark()});$('delete').onclick=()=>safe(async()=>{if(!active||!confirm('Delete '+active+'?'))return;const n=active;await closeFile(n);files.delete(n);refresh();mark()});
-function download(b,n){const u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download=n;a.click();setTimeout(()=>URL.revokeObjectURL(u),3000)}$('export').onclick=()=>safe(async()=>{save();if(!window.JSZip)throw Error('ZIP library is unavailable. Reload with internet access.');const z=new JSZip();for(const d of folders)z.folder(d);for(const [n,f]of files)z.file(n,f.blob);download(await z.generateAsync({type:'blob',compression:'DEFLATE'}),'project.zip');dirty=false;status('ZIP exported.')});$('run').onclick=()=>safe(run);$('stop').onclick=()=>{clearTimeout(timer);$('preview').src='about:blank';status('Stopped.')};$('root').onchange=()=>renderEntries();$('browser').onclick=()=>{if(previewURL)window.open(previewURL,'_blank','noopener');else status('Run the project first.')};$('full').onclick=()=>safe(()=>$('preview').requestFullscreen());$('clear').onclick=()=>$('console').replaceChildren();
+$('add').onclick=()=>$('uploads').click();$('uploads').onchange=e=>safe(async()=>{try{save();const raw=prompt('Destination folder (blank = ZIP root)','');if(raw===null)return;const dir=norm(raw);for(const f of e.target.files){const n=(dir?dir+'/':'')+f.name;validateFile(n);if(files.has(n)&&!confirm('Replace '+n+'?'))continue;put(n,{blob:f});if(n===active){active='';await openFile(n)}}refresh();mark()}finally{e.target.value=''}});
+$('new').onclick=()=>safe(async()=>{const raw=prompt('File path, e.g. src/player.js');if(!raw)return;const n=norm(raw);validateFile(n);if(!files.has(n)){put(n,{blob:new Blob(['']),content:''});mark()}refresh();await openFile(n)});$('folder').onclick=()=>safe(()=>{const raw=prompt('Folder path');if(!raw)return;const n=norm(raw);if(!n)return;if(files.has(n))throw Error('A file has that path.');const a=n.split('/');for(let i=1;i<a.length;i++)if(files.has(a.slice(0,i).join('/')))throw Error('A file blocks that folder path.');folders.add(n);parents(n+'/x');refresh();mark()});
+$('rename').onclick=()=>safe(async()=>{if(!active)return;const raw=prompt('New file path (references are not rewritten)',active);if(!raw)return;const n=norm(raw);if(!n||n===active)return;validateFile(n);if(files.has(n))throw Error('Destination exists.');save();const old=active;put(n,files.get(old));files.delete(old);tabs[tabs.indexOf(old)]=n;active='';await openFile(n);refresh();mark()});$('delete').onclick=()=>safe(async()=>{if(!active||!confirm('Delete '+active+'?'))return;const n=active;await closeFile(n);files.delete(n);refresh();mark()});
+function download(b,n){const u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download=n;a.click();setTimeout(()=>URL.revokeObjectURL(u),3000)}$('export').onclick=()=>safe(async()=>{save();if(!window.JSZip)throw Error('ZIP library is unavailable. Reload with internet access.');const z=new JSZip();for(const d of folders)z.folder(d);for(const [n,f]of files)z.file(n,f.blob);download(await z.generateAsync({type:'blob',compression:'DEFLATE'}),'project.zip');dirty=false;status('ZIP exported.')});$('run').onclick=()=>safe(run);$('stop').onclick=()=>{clearTimeout(timer);pending=false;$('preview').src='about:blank';status('Stopped.')};$('root').onchange=()=>renderEntries();$('browser').onclick=()=>{if(previewURL)window.open(previewURL,'_blank','noopener');else status('Run the project first.')};$('full').onclick=()=>safe(()=>$('preview').requestFullscreen());$('clear').onclick=()=>$('console').replaceChildren();
 drag($('leftGrip'),e=>({x:e.clientX,w:$('sidebar').offsetWidth}),(e,v)=>$('sidebar').style.width=Math.max(120,Math.min(650,v.w+e.clientX-v.x))+'px');drag($('rightGrip'),e=>({x:e.clientX,w:$('code').offsetWidth}),(e,v)=>$('code').style.width=Math.max(240,Math.min(1800,v.w+e.clientX-v.x))+'px');drag($('logGrip'),e=>({y:e.clientY,h:$('console').offsetHeight}),(e,v)=>$('console').style.height=Math.max(60,Math.min($('view').offsetHeight-180,v.h+v.y-e.clientY))+'px');
-addEventListener('message',e=>{if(e.source!==$('preview').contentWindow||e.origin!==location.origin||e.data?.source!=='zippad-preview'||!Array.isArray(e.data.args))return;log(e.data.args.join(' '),e.data.kind)});navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.source==='zippad-sw')log(e.data.message,'error')});addEventListener('beforeunload',e=>{save();if(dirty){e.preventDefault();e.returnValue=''}});addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();safe(run)}if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();$('export').click()}});
-put('demo/index.html',{blob:new Blob(['<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="styles/main.css"></head><body><canvas id="game"></canvas><div>GitHub Pages virtual project<br>Relative ES modules + pointer lock<br>Click to capture; Esc to release</div><script type="module" src="scripts/main.js"></script></body></html>'])});put('demo/styles/main.css',{blob:new Blob(['html,body{margin:0;height:100%;overflow:hidden;background:#15253d;color:#e1edff;font:15px system-ui}canvas{width:100%;height:100%;display:block}body>div{position:absolute;top:18px;left:18px;line-height:1.7;pointer-events:none}'])});put('demo/scripts/main.js',{blob:new Blob(["import {start} from './player.js';start(document.querySelector('canvas'));console.log('Relative module import succeeded');import('./extra.js').then(m=>console.log(m.message));fetch('/data.json').then(r=>r.json()).then(console.log);"])});put('demo/scripts/extra.js',{blob:new Blob(["export const message='Dynamic import succeeded';"])});put('demo/scripts/player.js',{blob:new Blob(["export function start(c){const g=c.getContext('2d');let x=160,y=160;function draw(){c.width=innerWidth;c.height=innerHeight;g.fillStyle='#15253d';g.fillRect(0,0,c.width,c.height);g.strokeStyle='#85e3c8';g.lineWidth=2;g.beginPath();g.moveTo(x-15,y);g.lineTo(x+15,y);g.moveTo(x,y-15);g.lineTo(x,y+15);g.stroke()}c.onclick=async()=>{try{await c.requestPointerLock()}catch(e){console.error(e)}};addEventListener('mousemove',e=>{if(document.pointerLockElement!==c)return;x=Math.max(0,Math.min(innerWidth,x+e.movementX));y=Math.max(0,Math.min(innerHeight,y+e.movementY));draw()});addEventListener('resize',draw);draw()}"])});put('demo/data.json',{blob:new Blob(['{"message":"Root-relative fetch succeeded"}'])});folders.add('demo/assets');refresh();$('root').value='demo';renderEntries('demo/index.html');safe(()=>openFile('demo/index.html'));
-async function initializePreviewWorker() {
-  ready = false;
-  $("run").disabled = true;
-
-  const timeout = (promise, milliseconds, message) =>
-    new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(message)),
-        milliseconds
-      );
-
-      promise.then(
-        value => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        error => {
-          clearTimeout(timer);
-          reject(error);
-        }
-      );
-    });
-
-  try {
-    if (!window.isSecureContext) {
-      throw new Error(
-        "Open the deployed HTTPS GitHub Pages website, " +
-        "not a downloaded HTML file."
-      );
-    }
-
-    if (!("serviceWorker" in navigator)) {
-      throw new Error(
-        "Service workers are unavailable in this browser or context."
-      );
-    }
-
-    const workerURL = new URL("sw.js", BASE);
-
-    status("Checking " + workerURL.href);
-
-    const response = await timeout(
-      fetch(workerURL, { cache: "no-store" }),
-      15000,
-      "Checking sw.js timed out. Check your connection and reload."
-    );
-
-    if (!response.ok) {
-      throw new Error(
-        `sw.js returned HTTP ${response.status}. ` +
-        "Publish sw.js beside index.html and app.js."
-      );
-    }
-
-    const contentType =
-      response.headers.get("content-type") || "";
-
-    if (!/javascript|ecmascript/i.test(contentType)) {
-      throw new Error(
-        `sw.js has an unexpected content type: ` +
-        `${contentType || "(missing)"}. ` +
-        "The URL may be returning an HTML error page."
-      );
-    }
-
-    status("Registering preview service worker…");
-
-    await timeout(
-      navigator.serviceWorker.register(workerURL.href, {
-        scope: BASE.href,
-        updateViaCache: "none"
-      }),
-      15000,
-      "Service-worker registration timed out."
-    );
-
-    status("Waiting for service-worker activation…");
-
-    await timeout(
-      navigator.serviceWorker.ready,
-      15000,
-      "The worker registered but did not activate. Reload once. " +
-      "If this persists, check the browser console for a worker error."
-    );
-
-    if (!navigator.serviceWorker.controller) {
-      status("Waiting for the worker to control this page…");
-
-      await timeout(
-        new Promise(resolve => {
-          const check = () => {
-            if (navigator.serviceWorker.controller) {
-              navigator.serviceWorker.removeEventListener(
-                "controllerchange",
-                check
-              );
-              resolve();
-            }
-          };
-
-          navigator.serviceWorker.addEventListener(
-            "controllerchange",
-            check
-          );
-
-          check();
-        }),
-        10000,
-        "The worker is active but does not control this page. " +
-        "Reload the deployed Pages website once."
-      );
-    }
-
-    ready = true;
-    $("run").disabled = false;
-
-    status("Preview worker ready. Import a ZIP or run the demo.");
-  } catch (error) {
-    const message = "Preview startup failed: " + error.message;
-    status(message);
-    log(message, "error");
-    console.error(error);
-  }
-}
-
+addEventListener('message',e=>{if(e.source!==$('preview').contentWindow||e.origin!==location.origin||e.data?.source!=='zippad-preview'||!Array.isArray(e.data.args))return;log(e.data.args.join(' '),e.data.kind)});addEventListener('beforeunload',e=>{save();if(dirty){e.preventDefault();e.returnValue=''}});addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();if(ready)safe(run);else status(startupError)}if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();$('export').click()}});
+put('demo/index.html',{blob:new Blob(['<!doctype html><html><head><meta charset="utf-8"><title>New Tab preview</title><link rel="stylesheet" href="styles/main.css"></head><body><canvas id="game"></canvas><div>Relative ES modules + pointer lock<br>Click to capture; Esc to release</div><script type="module" src="scripts/main.js"></script></body></html>'])});put('demo/styles/main.css',{blob:new Blob(['html,body{margin:0;height:100%;overflow:hidden;background:#15253d;color:#e1edff;font:15px system-ui}canvas{width:100%;height:100%;display:block}body>div{position:absolute;top:18px;left:18px;line-height:1.7;pointer-events:none}'])});put('demo/scripts/main.js',{blob:new Blob(["import {start} from './player.js';start(document.querySelector('canvas'));console.log('Relative module import succeeded');import('./extra.js').then(m=>console.log(m.message));fetch('/data.json').then(r=>r.json()).then(console.log);"])});put('demo/scripts/extra.js',{blob:new Blob(["export const message='Dynamic import succeeded';"])});put('demo/scripts/player.js',{blob:new Blob(["export function start(c){const g=c.getContext('2d');let x=160,y=160;function draw(){c.width=innerWidth;c.height=innerHeight;g.fillStyle='#15253d';g.fillRect(0,0,c.width,c.height);g.strokeStyle='#85e3c8';g.lineWidth=2;g.beginPath();g.moveTo(x-15,y);g.lineTo(x+15,y);g.moveTo(x,y-15);g.lineTo(x,y+15);g.stroke()}c.onclick=async()=>{try{await c.requestPointerLock()}catch(e){console.error(e)}};addEventListener('mousemove',e=>{if(document.pointerLockElement!==c)return;x=Math.max(0,Math.min(innerWidth,x+e.movementX));y=Math.max(0,Math.min(innerHeight,y+e.movementY));draw()});addEventListener('resize',draw);draw()}"])});put('demo/data.json',{blob:new Blob(['{"message":"Root-relative fetch succeeded"}'])});folders.add('demo/assets');refresh();$('root').value='demo';renderEntries('demo/index.html');safe(()=>openFile('demo/index.html'));
+function withTimeout(promise,ms,message){return new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error(message)),ms);promise.then(v=>{clearTimeout(t);resolve(v)},e=>{clearTimeout(t);reject(e)})})}
+async function waitForController(workerURL){const sw=navigator.serviceWorker;if(sw.controller&&sw.controller.scriptURL===workerURL)return;await new Promise((resolve,reject)=>{const finish=error=>{clearTimeout(t);sw.removeEventListener('controllerchange',check);error?reject(error):resolve()},check=()=>{if(sw.controller&&sw.controller.scriptURL===workerURL)finish()};const t=setTimeout(()=>finish(Error('Worker active but not controlling this page. Reload once using the normal reload button, then Retry preview setup.')),12000);sw.addEventListener('controllerchange',check);check()})}
+async function initializePreviewWorker(){if(initializing)return;initializing=true;ready=false;$('run').disabled=true;if($('retry'))$('retry').disabled=true;startupError='Preview setup is in progress.';try{
+if(!window.isSecureContext)throw Error('Open the deployed HTTPS GitHub Pages website, not a downloaded file.');
+if(!('serviceWorker'in navigator))throw Error('Service workers are unavailable in this browser or browsing context.');
+const workerURL=new URL('sw.js',BASE);status('Checking '+workerURL.href);log('Setup: '+workerURL.href,'info');
+const response=await withTimeout(fetch(workerURL.href,{cache:'no-store'}),15000,'Checking sw.js timed out. Check your connection and retry.');
+if(!response.ok)throw Error('sw.js returned HTTP '+response.status+'. Publish sw.js beside index.html and app.js.');
+const contentType=response.headers.get('content-type')||'';if(!/javascript|ecmascript/i.test(contentType))throw Error('sw.js was served as '+(contentType||'(missing Content-Type)')+'. The URL may be an HTML error page instead of JavaScript.');
+const source=await response.text();if(/^\s*(?:<!doctype|<html)/i.test(source))throw Error('sw.js returned HTML instead of JavaScript. Check the published folder.');
+status('Registering preview service worker…');const registration=await withTimeout(navigator.serviceWorker.register(workerURL.href,{scope:BASE.href,updateViaCache:'none'}),15000,'Service-worker registration timed out.');
+log('Worker scope: '+registration.scope,'info');status('Waiting for worker activation…');
+await withTimeout(navigator.serviceWorker.ready,15000,'Worker registered but did not activate. Reload once; if it persists, send the registration error shown here.');
+status('Waiting for worker control…');await waitForController(workerURL.href);
+status('Checking browser storage…');const storage=await withTimeout(db(),10000,'IndexedDB is not responding. Allow site storage or try a normal browser window.');storage.close();
+navigator.serviceWorker.removeEventListener('message',workerMessage);navigator.serviceWorker.addEventListener('message',workerMessage);
+ready=true;startupError='';$('run').disabled=false;status('Preview ready. Import a ZIP or click Run to test the demo.');log('Preview setup completed.','info');
+}catch(error){startupError='Preview startup failed: '+error.message;status(startupError);log(startupError,'error');console.error(error)}finally{initializing=false;if($('retry'))$('retry').disabled=false}}
+function workerMessage(e){if(e.data?.source==='zippad-sw')log(e.data.message,'error')}
+if($('retry'))$('retry').onclick=initializePreviewWorker;
 initializePreviewWorker();
