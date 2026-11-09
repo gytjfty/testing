@@ -1,6 +1,6 @@
  'use strict';
 const BASE=new URL(self.registration.scope),PREFIX=BASE.pathname+'__preview__/',DBNAME='zippad-pages:'+BASE.pathname,memory=new Map();
-self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
+self.addEventListener('install',event=>event.waitUntil(self.skipWaiting()));self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
 function db(){return new Promise((resolve,reject)=>{const r=indexedDB.open(DBNAME,1);r.onupgradeneeded=()=>r.result.createObjectStore('projects',{keyPath:'id'});r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
 async function project(id){if(memory.has(id))return memory.get(id);const d=await db();try{const record=await new Promise((resolve,reject)=>{const r=d.transaction('projects').objectStore('projects').get(id);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)});if(!record)return null;record.map=new Map(record.files);memory.set(id,record);while(memory.size>3)memory.delete(memory.keys().next().value);return record}finally{d.close()}}
 function virtual(url){if(url.origin!==BASE.origin||!url.pathname.startsWith(PREFIX))return null;const rest=url.pathname.slice(PREFIX.length),i=rest.indexOf('/');if(i<0)return {id:rest,path:''};try{return {id:rest.slice(0,i),path:decodeURIComponent(rest.slice(i+1))}}catch{return null}}
